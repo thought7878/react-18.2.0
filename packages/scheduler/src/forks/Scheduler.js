@@ -163,7 +163,12 @@ function handleTimeout(currentTime) {
   }
 }
 
-// 刷新工作的主函数
+/**
+ * 刷新工作的主函数
+ * @param {*} hasTimeRemaining
+ * @param {*} initialTime
+ * @returns workLoop的返回值：true：currentTask !== null，仍有工作要做；false：没有更多工作
+ */
 function flushWork(hasTimeRemaining, initialTime) {
   if (enableProfiling) {
     markSchedulerUnsuspended(initialTime); // 标记调度器恢复
@@ -206,7 +211,13 @@ function flushWork(hasTimeRemaining, initialTime) {
   }
 }
 
-// 实际的工作循环
+
+/**
+ * 实际的工作循环
+ * @param {*} hasTimeRemaining
+ * @param {*} initialTime
+ * @returns true：currentTask !== null，仍有工作要做；false：没有更多工作
+ */
 function workLoop(hasTimeRemaining, initialTime) {
   let currentTime = initialTime;  // 当前时间
   advanceTimers(currentTime);     // 推进计时器
@@ -215,6 +226,7 @@ function workLoop(hasTimeRemaining, initialTime) {
     currentTask !== null &&       // 当前任务不为空
     !(enableSchedulerDebugging && isSchedulerPaused)  // 不处于调试暂停状态
   ) {
+    // 检查是否需要让出控制权给浏览器
     if (
       currentTask.expirationTime > currentTime &&  // 当前任务未过期
       (!hasTimeRemaining || shouldYieldToHost())   // 没有剩余时间或应该让出给主机
@@ -222,17 +234,22 @@ function workLoop(hasTimeRemaining, initialTime) {
       // 当前任务未过期，且已达到截止时间，跳出循环
       break;
     }
+
     const callback = currentTask.callback;  // 获取任务回调函数
-    if (typeof callback === 'function') {   // 如果回调函数存在
+    // 如果任务的回调函数存在
+    if (typeof callback === 'function') {   // 如果任务的回调函数存在
       currentTask.callback = null;          // 清空任务回调
       currentPriorityLevel = currentTask.priorityLevel;  // 设置当前优先级为任务优先级
       const didUserCallbackTimeout = currentTask.expirationTime <= currentTime;  // 检查任务是否已过期
+
       if (enableProfiling) {
         markTaskRun(currentTask, currentTime);  // 标记任务运行
       }
-      const continuationCallback = callback(didUserCallbackTimeout);  // 执行回调
+
+      const continuationCallback = callback(didUserCallbackTimeout);  // 执行任务的回调
       currentTime = getCurrentTime();  // 更新当前时间
-      if (typeof continuationCallback === 'function') {  // 如果返回了延续回调
+
+      if (typeof continuationCallback === 'function') {  // 如果返回了延续回调，任务还没完成
         currentTask.callback = continuationCallback;     // 将延续回调保存到任务
         if (enableProfiling) {
           markTaskYield(currentTask, currentTime);  // 标记任务让出
@@ -246,12 +263,15 @@ function workLoop(hasTimeRemaining, initialTime) {
           pop(taskQueue);  // 从队列中弹出任务
         }
       }
+
       advanceTimers(currentTime);  // 推进计时器
-    } else {  // 回调函数不存在
+    } else {  // 任务的回调函数不存在
       pop(taskQueue);  // 弹出任务
     }
-    currentTask = peek(taskQueue);  // 获取下一个任务
+    // 获取下一个任务，继续下一个循环
+    currentTask = peek(taskQueue);
   }
+
   // 返回是否还有额外工作
   if (currentTask !== null) {
     return true;  // 仍有工作要做
@@ -331,15 +351,32 @@ function unstable_wrapCallback(callback) {
   };
 }
 
-// 调度一个回调函数
+/*
+主要对外接口函数，任务调度器与外界交互的核心函数
+
+安排、调度一个回调函数：
+  创建一个新任务：
+    处理任务开始时间（不是执行时间）：
+      处理延迟选项
+    计算任务的过期时间（设置任务的排序索引为过期时间，最小二叉堆排序使用）：
+
+    将回调函数封装成任务
+    优先级：根据传递的参数priorityLevel
+
+  将新任务添加到适当的队列中：
+    如果是延迟任务，放入 timerQueue；
+    否则，是一个立即执行的任务，放入 taskQueue，安排执行任务。
+
+*/
 function unstable_scheduleCallback(priorityLevel, callback, options) {
   var currentTime = getCurrentTime();  // 获取当前时间
 
-  var startTime;  // 任务开始时间
+  var startTime;  // 任务开始时间，不是执行时间
+  // 处理延迟选项
   if (typeof options === 'object' && options !== null) {
     var delay = options.delay;  // 获取延迟时间
     if (typeof delay === 'number' && delay > 0) {
-      startTime = currentTime + delay;  // 计算开始时间
+      startTime = currentTime + delay;  // 计算延迟任务的开始时间
     } else {
       startTime = currentTime;  // 立即开始
     }
@@ -347,6 +384,7 @@ function unstable_scheduleCallback(priorityLevel, callback, options) {
     startTime = currentTime;  // 立即开始
   }
 
+  // 根据优先级设置超时时间
   var timeout;  // 超时时间
   switch (priorityLevel) {
     case ImmediatePriority:
@@ -367,9 +405,10 @@ function unstable_scheduleCallback(priorityLevel, callback, options) {
       break;
   }
 
-  var expirationTime = startTime + timeout;  // 计算过期时间
+  // 计算任务的过期时间（设置任务的排序索引为过期时间，最小二叉堆排序使用）
+  var expirationTime = startTime + timeout;
 
-  // 创建新任务对象
+  // 创建新任务对象，构建任务对象
   var newTask = {
     id: taskIdCounter++,     // 任务ID，自增
     callback,               // 回调函数
@@ -382,6 +421,7 @@ function unstable_scheduleCallback(priorityLevel, callback, options) {
     newTask.isQueued = false;  // 标记任务不在队列中
   }
 
+  // 如果是延迟任务，放入 timerQueue；否则放入 taskQueue
   if (startTime > currentTime) {
     // 这是一个延迟任务
     newTask.sortIndex = startTime;  // 设置排序索引为开始时间
@@ -398,15 +438,16 @@ function unstable_scheduleCallback(priorityLevel, callback, options) {
       requestHostTimeout(handleTimeout, startTime - currentTime);
     }
   } else {
-    // 这是一个立即执行的任务
+    // 这是一个立即执行的任务，放入 taskQueue
     newTask.sortIndex = expirationTime;  // 设置排序索引为过期时间
     push(taskQueue, newTask);            // 添加到任务队列
     if (enableProfiling) {
       markTaskStart(newTask, currentTime);  // 标记任务开始
       newTask.isQueued = true;              // 标记任务在队列中
     }
-    // 如有必要，计划一个主机回调。如果我们已经在执行工作，
-    // 等到下次让出时再执行
+    // 安排执行
+    // 如果需要的话，调度一个HostCallback。如果我们已经在执行work，就等到下次我们让出控制权的时候。
+    // 如有必要，计划一个主机回调。如果我们已经在执行工作，等到下次让出时再执行
     if (!isHostCallbackScheduled && !isPerformingWork) {
       isHostCallbackScheduled = true;  // 标记主机回调已调度
       requestHostCallback(flushWork);  // 请求主机回调执行刷新工作
@@ -563,10 +604,11 @@ const performWorkUntilDeadline = () => {
     let hasMoreWork = true;
     try {
       // 开始 flushWork(hasTimeRemaining, initialTime)
+      // hasMoreWork，来自flushWork的返回值，来自workLoop的放回值，true：currentTask !== null，仍有工作要做；false：没有更多工作
       hasMoreWork = scheduledHostCallback(hasTimeRemaining, currentTime);
     } finally {
       if (hasMoreWork) {
-        // 如果还有更多工作，在前一个消息事件结束时安排下一个消息事件
+        // 如果还有更多工作，在前一个消息事件结束时安排下一个消息事件（安排下一个微任务）
         schedulePerformWorkUntilDeadline();
       } else {
         isMessageLoopRunning = false;  // 消息循环停止
