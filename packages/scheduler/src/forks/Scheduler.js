@@ -96,7 +96,7 @@ var currentPriorityLevel = NormalPriority;
 // 执行工作时设置此标志，防止重新进入
 var isPerformingWork = false;
 
-// 主机回调是否已调度
+// 主线程是否在调度（主机回调是否已调度）
 var isHostCallbackScheduled = false;
 // 主机超时是否已调度
 var isHostTimeoutScheduled = false;
@@ -226,19 +226,19 @@ function workLoop(hasTimeRemaining, initialTime) {
     currentTask !== null &&       // 当前任务不为空
     !(enableSchedulerDebugging && isSchedulerPaused)  // 不处于调试暂停状态
   ) {
-    // 检查是否需要让出控制权给浏览器
+    // 检查是否需要让出主线程的控制权（控制权给浏览器）
     if (
       currentTask.expirationTime > currentTime &&  // 当前任务未过期
       (!hasTimeRemaining || shouldYieldToHost())   // 没有剩余时间或应该让出给主机
     ) {
-      // 当前任务未过期，且已达到截止时间，跳出循环
+      // 当前任务未过期，且（没有剩余时间或应该让出给主机），跳出循环
       break;
     }
 
     const callback = currentTask.callback;  // 获取任务回调函数
-    // 如果任务的回调函数存在
+    // 执行任务的回调，或弹出任务
     if (typeof callback === 'function') {   // 如果任务的回调函数存在
-      currentTask.callback = null;          // 清空任务回调
+      currentTask.callback = null;          // 清空任务回调，防止重复执行
       currentPriorityLevel = currentTask.priorityLevel;  // 设置当前优先级为任务优先级
       const didUserCallbackTimeout = currentTask.expirationTime <= currentTime;  // 检查任务是否已过期
 
@@ -249,8 +249,9 @@ function workLoop(hasTimeRemaining, initialTime) {
       const continuationCallback = callback(didUserCallbackTimeout);  // 执行任务的回调
       currentTime = getCurrentTime();  // 更新当前时间
 
+      // 任务还没完成
       if (typeof continuationCallback === 'function') {  // 如果返回了延续回调，任务还没完成
-        currentTask.callback = continuationCallback;     // 将延续回调保存到任务
+        currentTask.callback = continuationCallback;     // 将延续回调保存到任务，continuationCallback由scheduler的使用者（外部使用者）控制
         if (enableProfiling) {
           markTaskYield(currentTask, currentTime);  // 标记任务让出
         }
@@ -272,16 +273,17 @@ function workLoop(hasTimeRemaining, initialTime) {
     currentTask = peek(taskQueue);
   }
 
-  // 返回是否还有额外工作
+  // 任务队列taskQueue中是否还有任务未完成
   if (currentTask !== null) {
-    return true;  // 仍有工作要做
-  } else {
-    const firstTimer = peek(timerQueue);  // 获取计时器队列中的第一个任务
+    return true;  // 还有任务未完成，返回true
+  } else {// taskQueue中，没有任务了
+    // 处理计时器队列timerQueue中的任务
+    const firstTimer = peek(timerQueue);  // 获取计时器队列timerQueue中的第一个任务
     if (firstTimer !== null) {  // 如果存在延迟任务
       // 请求主机超时，等待第一个延迟任务开始
       requestHostTimeout(handleTimeout, firstTimer.startTime - currentTime);
     }
-    return false;  // 没有更多工作
+    return false;
   }
 }
 
@@ -449,8 +451,8 @@ function unstable_scheduleCallback(priorityLevel, callback, options) {
     // 如果需要的话，调度一个HostCallback。如果我们已经在执行work，就等到下次我们让出控制权的时候。
     // 如有必要，计划一个主机回调。如果我们已经在执行工作，等到下次让出时再执行
     if (!isHostCallbackScheduled && !isPerformingWork) {
-      isHostCallbackScheduled = true;  // 标记主机回调已调度
-      requestHostCallback(flushWork);  // 请求主机回调执行刷新工作
+      isHostCallbackScheduled = true;  // 标记主线程在调度，标记主机回调已调度
+      requestHostCallback(flushWork);  // 请求主机回调，执行刷新工作
     }
   }
 
@@ -496,9 +498,9 @@ function unstable_getCurrentPriorityLevel() {
   return currentPriorityLevel;  // 返回当前优先级
 }
 
-// 消息循环是否正在运行
+// 消息循环（时间切片）是否正在运行
 let isMessageLoopRunning = false;
-// 计划的主机回调
+// 计划的主回调，即flushWork()
 let scheduledHostCallback = null;
 // 任务超时ID
 let taskTimeoutID = -1;
@@ -587,10 +589,13 @@ function forceFrameRate(fps) {
   }
 }
 
+// 新的时间切片开始执行
+// 执行work（执行多个task）直到时间切片结束
 // 直到截止时间的工作执行函数
 const performWorkUntilDeadline = () => {
   if (scheduledHostCallback !== null) {
     const currentTime = getCurrentTime();
+    // 时间切片的起始时间
     // 跟踪开始时间，以测量主线程被阻塞了多长时间
     startTime = currentTime;
     const hasTimeRemaining = true;
@@ -603,15 +608,18 @@ const performWorkUntilDeadline = () => {
     // hasMoreWork 将保持为 true，我们将继续工作循环。
     let hasMoreWork = true;
     try {
+      // scheduledHostCallback = callback = flushWork; flushWork --> workLoop;
       // 开始 flushWork(hasTimeRemaining, initialTime)
-      // hasMoreWork，来自flushWork的返回值，来自workLoop的放回值，true：currentTask !== null，仍有工作要做；false：没有更多工作
+      // hasMoreWork，来自flushWork的返回值，来自workLoop的放回值，true：currentTask !== null，任务队列中还有task；false：没有task了
       hasMoreWork = scheduledHostCallback(hasTimeRemaining, currentTime);
     } finally {
+      // 如果还有更多task
       if (hasMoreWork) {
-        // 如果还有更多工作，在前一个消息事件结束时安排下一个消息事件（安排下一个微任务）
+        // ！！！当前的时间切片结束时，安排下一个时间切片，安排执行work、任务，直到截止时间
+        // 在前一个（当前）消息事件结束时，安排下一个消息事件（安排下一个微任务）
         schedulePerformWorkUntilDeadline();
-      } else {
-        isMessageLoopRunning = false;  // 消息循环停止
+      } else {//任务队列中，没有任务了
+        isMessageLoopRunning = false;  // 消息循环停止，时间切片循环停止
         scheduledHostCallback = null;  // 清空计划的主机回调
       }
     }
@@ -654,12 +662,13 @@ if (typeof localSetImmediate === 'function') {
   };
 }
 
-// 请求主机回调
+// 请求主回调
+// scheduledHostCallback = callback = flushWork
 function requestHostCallback(callback) {
-  scheduledHostCallback = callback;  // 设置计划的主机回调
-  if (!isMessageLoopRunning) {      // 如果消息循环未运行
+  scheduledHostCallback = callback;  // 设置计划的主回调，即flushWork
+  if (!isMessageLoopRunning) {      // 如果消息循环（时间切片）未运行
     isMessageLoopRunning = true;    // 启动消息循环
-    schedulePerformWorkUntilDeadline();  // 安排执行直到截止时间
+    schedulePerformWorkUntilDeadline();  // 触发、安排、启动，下一个时间切片（安排执行work、任务，直到截止时间）
   }
 }
 

@@ -571,35 +571,43 @@ export function createLaneMap<T>(initial: T): LaneMap<T> {
   }
   return laneMap;
 }
-
+// 标记根节点有更新的函数
+// root: Fiber 根节点
+// updateLane: 更新的优先级车道
+// eventTime: 事件发生的时间
 export function markRootUpdated(
   root: FiberRoot,
   updateLane: Lane,
   eventTime: number,
 ) {
+  // 将更新车道添加到根节点的待处理车道中
+  // 使用按位或操作符合并车道
   root.pendingLanes |= updateLane;
 
-  // If there are any suspended transitions, it's possible this new update
-  // could unblock them. Clear the suspended lanes so that we can try rendering
-  // them again.
+  // 如果有任何暂停的过渡，这个新更新有可能解除它们的暂停状态
+  // 清除暂停的车道，以便我们可以尝试再次渲染它们
   //
-  // TODO: We really only need to unsuspend only lanes that are in the
-  // `subtreeLanes` of the updated fiber, or the update lanes of the return
-  // path. This would exclude suspended updates in an unrelated sibling tree,
-  // since there's no way for this update to unblock it.
+  // TODO: 我们实际上只需要解除在更新的 fiber 的 `subtreeLanes` 中，
+  // 或返回路径的更新车道中的那些车道的暂停状态。
+  // 这将排除无关兄弟树中的暂停更新，因为这个更新不可能解除它们的阻塞。
   //
-  // We don't do this if the incoming update is idle, because we never process
-  // idle updates until after all the regular updates have finished; there's no
-  // way it could unblock a transition.
+  // 我们不会在传入的更新是空闲状态时这样做，因为我们只有在所有常规更新完成后
+  // 才处理空闲更新；它不可能解除过渡的阻塞。
+
+  // 如果update是空闲的（idle），将不会处理它，因为我们直到所有常规update完成后，才会处理空闲的更新
   if (updateLane !== IdleLane) {
+    // 清除暂停的车道
     root.suspendedLanes = NoLanes;
+    // 清除已 ping 的车道
     root.pingedLanes = NoLanes;
   }
 
+  // 获取事件时间数组
   const eventTimes = root.eventTimes;
+  // 将车道转换为索引
   const index = laneToIndex(updateLane);
-  // We can always overwrite an existing timestamp because we prefer the most
-  // recent event, and we assume time is monotonically increasing.
+  // 我们总是可以覆盖现有的时间戳，因为我们更喜欢最近的事件，
+  // 并且我们假设时间是单调递增的
   eventTimes[index] = eventTime;
 }
 

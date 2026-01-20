@@ -120,30 +120,41 @@ import {setIsStrictModeForDevtools} from './ReactFiberDevToolsHook.new';
 
 import assign from 'shared/assign';
 
+// 定义更新类型，描述一次状态或属性的更改
 export type Update<State> = {|
-  // TODO: Temporary field. Will remove this by storing a map of
-  // transition -> event time on the root.
-  eventTime: number,
-  lane: Lane,
+  // TODO: 临时字段。将通过在根节点上存储 transition -> event time 映射来移除此字段
+  eventTime: number,           // 事件发生的时间戳，用于优先级计算和调度
 
-  tag: 0 | 1 | 2 | 3,
-  payload: any,
-  callback: (() => mixed) | null,
+  lane: Lane,                 // 该更新所属的优先级车道，决定更新的执行顺序
 
-  next: Update<State> | null,
+  tag: 0 | 1 | 2 | 3,        // 更新标签，区分不同类型的更新操作：
+                              // 0 = UpdateState (状态更新)
+                              // 1 = ReplaceState (替换状态)
+                              // 2 = ForceUpdate (强制更新)
+                              // 3 = CaptureUpdate (捕获更新，用于错误处理)
+
+  payload: any,               // 更新的负载数据，根据更新类型不同而不同：
+                              // - 对于状态更新，是新的状态值或状态计算函数
+                              // - 对于属性更新，是新的属性对象
+
+  callback: (() => mixed) | null,  // 更新完成后的回调函数，通常用于 componentDidUpdate
+                                   // 或 setState 的回调参数
+
+  next: Update<State> | null,      // 指向下一个更新的指针，形成链表结构，用于连接同一队列中的多个更新
 |};
-
+// 共享队列类型定义，用于跟踪等待中的更新
 export type SharedQueue<State> = {|
-  pending: Update<State> | null,
-  lanes: Lanes,
+  pending: Update<State> | null,  // 指向等待处理的最新更新，形成一个循环链表
+  lanes: Lanes,                   // 表示当前等待的更新所处的优先级车道
 |};
 
+// 更新队列类型定义，完整描述了一个组件的更新状态
 export type UpdateQueue<State> = {|
-  baseState: State,
-  firstBaseUpdate: Update<State> | null,
-  lastBaseUpdate: Update<State> | null,
-  shared: SharedQueue<State>,
-  effects: Array<Update<State>> | null,
+  baseState: State,                                    // 计算更新时的基准状态
+  firstBaseUpdate: Update<State> | null,               // 第一个待处理的基准更新
+  lastBaseUpdate: Update<State> | null,                // 最后一个待处理的基准更新
+  shared: SharedQueue<State>,                          // 共享队列，包含待处理的更新
+  effects: Array<Update<State>> | null,                // 存储产生副作用的更新数组，主要用于DevTools调试
 |};
 
 export const UpdateState = 0;
@@ -166,18 +177,41 @@ if (__DEV__) {
     currentlyProcessingQueue = null;
   };
 }
-
+// 这里初始化fiber.updateQueue。在beginWork阶段，updateHostRoot中使用processUpdateQueue函数来再具体赋值
+// 初始化更新队列的函数，为给定的 Fiber 创建一个全新的、空的更新队列
 export function initializeUpdateQueue<State>(fiber: Fiber): void {
+  // 创建一个新的更新队列对象
   const queue: UpdateQueue<State> = {
+    // 设置基准状态为当前 Fiber 的记忆化状态
+    // 基准状态是计算新状态的起点，后续的更新会基于此状态进行计算
     baseState: fiber.memoizedState,
+
+    // 初始化时没有基准更新，firstBaseUpdate 指向第一批待处理的更新中的第一个
+    // 在队列刚创建时为 null，随着更新的加入而改变
     firstBaseUpdate: null,
+
+    // 初始化时没有基准更新，lastBaseUpdate 指向第一批待处理的更新中的最后一个
+    // 在队列刚创建时为 null，随着更新的加入而改变
     lastBaseUpdate: null,
+
+    // 创建共享队列部分，这部分可以在多个 Fiber 之间共享（如 current 与 workInProgress 之间）
     shared: {
+      // 刚开始时没有等待处理的更新，pending 指向最新的等待处理的更新
+      // pending 形成一个循环链表，存储所有待处理的更新
       pending: null,
+
+      // 表示当前没有任何优先级车道有待处理的更新
+      // NoLanes 表示空的车道集合
       lanes: NoLanes,
     },
+
+    // 用于存储产生副作用的更新，主要用于 DevTools 调试
+    // 在初始化时为空，后续可能被填充
     effects: null,
   };
+
+  // 将创建的更新队列赋值给 Fiber 节点的 updateQueue 属性
+  // 这样该 Fiber 节点就有了自己的更新队列，可以用来处理状态更新
   fiber.updateQueue = queue;
 }
 
@@ -200,67 +234,100 @@ export function cloneUpdateQueue<State>(
   }
 }
 
+// 创建一个新的更新对象的函数
+// eventTime: 事件发生的时间戳
+// lane: 更新的优先级车道
 export function createUpdate(eventTime: number, lane: Lane): Update<*> {
+  // 创建一个 Update 对象，包含所有必要的更新信息
   const update: Update<*> = {
+    // 设置事件发生的时间戳，用于优先级计算和调度决策
     eventTime,
+
+    // 设置更新的优先级车道，决定更新的执行顺序
     lane,
 
+    // 设置更新标签为 UpdateState (值为0)，表示这是一个状态更新
+    // 这是最常见的更新类型，用于常规的状态变更
     tag: UpdateState,
+
+    // 初始时没有负载数据，payload 会在后续被赋予实际的状态值或函数
+    // payload 可以是新的状态值或一个返回新状态的函数
     payload: null,
+
+    // 初始时没有回调函数，callback 会在后续被设置（如 setState 的回调）
+    // 回调函数会在更新提交后执行
     callback: null,
 
+    // 初始时没有下一个更新，next 为 null，当需要形成更新队列时会指向下一个更新
+    // 这允许将多个更新链接成一个链表结构
     next: null,
   };
+
+  // 返回创建的更新对象
   return update;
 }
-
+// 将更新添加到 Fiber 节点的更新队列中的函数
+// fiber: 要更新的 Fiber 节点
+// update: 要添加的更新对象
+// lane: 更新的优先级车道
 export function enqueueUpdate<State>(
   fiber: Fiber,
   update: Update<State>,
   lane: Lane,
 ): FiberRoot | null {
+  // 获取 Fiber 节点的更新队列
   const updateQueue = fiber.updateQueue;
   if (updateQueue === null) {
-    // Only occurs if the fiber has been unmounted.
+    // 如果更新队列不存在，说明该 fiber 已经被卸载
     return null;
   }
 
+  // 获取共享队列部分，这是可以跨 Fiber 实例共享的部分
   const sharedQueue: SharedQueue<State> = (updateQueue: any).shared;
 
   if (__DEV__) {
+    // 在开发环境中，检测是否在更新函数内部调度了更新
     if (
-      currentlyProcessingQueue === sharedQueue &&
-      !didWarnUpdateInsideUpdate
+      currentlyProcessingQueue === sharedQueue &&  // 检查是否在处理相同的队列
+      !didWarnUpdateInsideUpdate  // 检查是否已经警告过
     ) {
+      // 发出警告：从更新函数内部调度了更新，更新函数应该是纯函数，不应该有副作用
       console.error(
         'An update (setState, replaceState, or forceUpdate) was scheduled ' +
           'from inside an update function. Update functions should be pure, ' +
           'with zero side-effects. Consider using componentDidUpdate or a ' +
           'callback.',
       );
+      // 标记已警告，避免重复警告
       didWarnUpdateInsideUpdate = true;
     }
   }
 
+  // 类组件的旧的生命周期相关的update，这里不再展开详解
+  // 检查是否是不安全的渲染阶段更新（在类组件中）
   if (isUnsafeClassRenderPhaseUpdate(fiber)) {
-    // This is an unsafe render phase update. Add directly to the update
-    // queue so we can process it immediately during the current render.
+    // 这是一个不安全的渲染阶段更新。直接添加到更新队列，
+    // 以便我们可以在当前渲染期间立即处理它
+
+    // 获取当前等待处理的更新
     const pending = sharedQueue.pending;
     if (pending === null) {
-      // This is the first update. Create a circular list.
-      update.next = update;
+      // 如果没有等待处理的更新，这是第一个更新，创建一个循环链表
+      update.next = update;  // 将更新的 next 指向自己，形成循环
     } else {
-      update.next = pending.next;
-      pending.next = update;
+      // 如果已有等待处理的更新，将新更新插入到链表中
+      update.next = pending.next;  // 新更新的 next 指向原来第一个更新
+      pending.next = update;       // 原来的最后一个更新指向新更新
     }
+    // 将新更新设为等待处理的更新（最新的更新）
     sharedQueue.pending = update;
 
-    // Update the childLanes even though we're most likely already rendering
-    // this fiber. This is for backwards compatibility in the case where you
-    // update a different component during render phase than the one that is
-    // currently renderings (a pattern that is accompanied by a warning).
+    // 即使我们很可能已经在渲染这个 fiber，也要更新 childLanes
+    // 这是为了向后兼容，以防你在渲染阶段更新了与当前渲染组件
+    // 不同的组件（这种模式会伴随一个警告）
     return unsafe_markUpdateLaneFromFiberToRoot(fiber, lane);
   } else {
+    // 对于非渲染阶段的更新，使用并发更新队列
     return enqueueConcurrentClassUpdate(fiber, sharedQueue, update, lane);
   }
 }
@@ -371,7 +438,13 @@ export function enqueueCapturedUpdate<State>(
   }
   queue.lastBaseUpdate = capturedUpdate;
 }
-
+// 根据更新计算新状态的函数
+// workInProgress: 当前正在工作的 Fiber 节点
+// queue: 更新队列
+// update: 当前更新对象
+// prevState: 之前的状态
+// nextProps: 新的属性
+// instance: 组件实例
 function getStateFromUpdate<State>(
   workInProgress: Fiber,
   queue: UpdateQueue<State>,
@@ -380,172 +453,208 @@ function getStateFromUpdate<State>(
   nextProps: any,
   instance: any,
 ): any {
+  // 根据更新的标签类型处理不同的更新
   switch (update.tag) {
     case ReplaceState: {
+      // 替换状态：完全替换当前状态
       const payload = update.payload;
       if (typeof payload === 'function') {
-        // Updater function
+        // 如果 payload 是函数，调用该函数计算新状态
         if (__DEV__) {
+          // 在开发模式下，防止在更新函数中读取上下文
           enterDisallowedContextReadInDEV();
         }
+        // 调用更新函数，传入当前状态和新属性
         const nextState = payload.call(instance, prevState, nextProps);
         if (__DEV__) {
+          // 在严格模式下，为了检测副作用，再次调用更新函数
           if (
             debugRenderPhaseSideEffectsForStrictMode &&
             workInProgress.mode & StrictLegacyMode
           ) {
             setIsStrictModeForDevtools(true);
             try {
+              // 再次调用更新函数以检测副作用
               payload.call(instance, prevState, nextProps);
             } finally {
+              // 恢复非严格模式
               setIsStrictModeForDevtools(false);
             }
           }
+          // 退出不允许读取上下文的模式
           exitDisallowedContextReadInDEV();
         }
+        // 返回计算出的新状态
         return nextState;
       }
-      // State object
+      // 如果 payload 不是函数，则直接返回 payload 作为新状态
       return payload;
     }
     case CaptureUpdate: {
+      // 捕获更新：用于错误边界
+      // 设置 Fiber 的标志，表示需要捕获错误
       workInProgress.flags =
         (workInProgress.flags & ~ShouldCapture) | DidCapture;
     }
-    // Intentional fallthrough
+    // 注意：这里故意不加 break，继续执行下面的 UpdateState 逻辑
     case UpdateState: {
+      // 状态更新：部分更新状态
       const payload = update.payload;
       let partialState;
       if (typeof payload === 'function') {
-        // Updater function
+        // 如果 payload 是函数，调用该函数计算部分状态
         if (__DEV__) {
+          // 在开发模式下，防止在更新函数中读取上下文
           enterDisallowedContextReadInDEV();
         }
+        // 调用更新函数，传入当前状态和新属性
         partialState = payload.call(instance, prevState, nextProps);
         if (__DEV__) {
+          // 在严格模式下，为了检测副作用，再次调用更新函数
           if (
             debugRenderPhaseSideEffectsForStrictMode &&
             workInProgress.mode & StrictLegacyMode
           ) {
             setIsStrictModeForDevtools(true);
             try {
+              // 再次调用更新函数以检测副作用
               payload.call(instance, prevState, nextProps);
             } finally {
+              // 恢复非严格模式
               setIsStrictModeForDevtools(false);
             }
           }
+          // 退出不允许读取上下文的模式
           exitDisallowedContextReadInDEV();
         }
       } else {
-        // Partial state object
+        // 如果 payload 不是函数，则直接使用 payload 作为部分状态
         partialState = payload;
       }
       if (partialState === null || partialState === undefined) {
-        // Null and undefined are treated as no-ops.
+        // 如果部分状态为 null 或 undefined，则视为无操作，返回之前的状态
         return prevState;
       }
-      // Merge the partial state and the previous state.
+      // 合并部分状态和之前的状态，返回新状态
       return assign({}, prevState, partialState);
     }
     case ForceUpdate: {
-      hasForceUpdate = true;
-      return prevState;
+      // 强制更新：仅标记需要强制更新，但不改变状态
+      hasForceUpdate = true;  // 设置强制更新标志
+      return prevState;       // 返回之前的状态
     }
   }
+  // 默认返回之前的状态
   return prevState;
 }
-
+// 处理更新队列的函数
+// workInProgress: 当前正在工作的 Fiber 节点
+// props: 当前组件的属性
+// instance: 组件实例
+// renderLanes: 当前渲染的优先级车道
 export function processUpdateQueue<State>(
   workInProgress: Fiber,
   props: any,
   instance: any,
   renderLanes: Lanes,
 ): void {
-  // This is always non-null on a ClassComponent or HostRoot
+  // 获取当前 Fiber 的更新队列（在类组件或宿主根节点上始终非空）
   const queue: UpdateQueue<State> = (workInProgress.updateQueue: any);
 
+  // 重置强制更新标志
   hasForceUpdate = false;
 
   if (__DEV__) {
+    // 在开发环境中标记当前正在处理的队列
     currentlyProcessingQueue = queue.shared;
   }
 
+  // 获取基础更新队列的首尾节点
   let firstBaseUpdate = queue.firstBaseUpdate;
   let lastBaseUpdate = queue.lastBaseUpdate;
 
-  // Check if there are pending updates. If so, transfer them to the base queue.
+  // 这里注意pending update不同于baseQueue，pending update只记录了尾节点
+  // 检查是否有待处理的更新。如果有，将它们转移到基础队列。
   let pendingQueue = queue.shared.pending;
   if (pendingQueue !== null) {
+    // 清空共享队列的待处理部分
     queue.shared.pending = null;
 
-    // The pending queue is circular. Disconnect the pointer between first
-    // and last so that it's non-circular.
-    const lastPendingUpdate = pendingQueue;
-    const firstPendingUpdate = lastPendingUpdate.next;
-    lastPendingUpdate.next = null;
-    // Append pending updates to base queue
+    // 待处理队列是循环链表。断开首尾指针使其变为非循环链表。
+    const lastPendingUpdate = pendingQueue;         // 最后一个待处理更新
+    const firstPendingUpdate = lastPendingUpdate.next; // 第一个待处理更新
+    lastPendingUpdate.next = null;                  // 断开循环链接
+
+    // 把pending update转移到base queue上
+    // 接下来构建单链表：firstBaseUpdate-->...-->lastBaseUpdate
+    // 将待处理更新追加到基础队列
     if (lastBaseUpdate === null) {
+      // 如果基础队列为空，直接设置第一个基础更新
       firstBaseUpdate = firstPendingUpdate;
     } else {
+      // 如果基础队列非空，将待处理更新连接到基础队列末尾
       lastBaseUpdate.next = firstPendingUpdate;
     }
+    // 更新最后基础更新为最后待处理更新
     lastBaseUpdate = lastPendingUpdate;
 
-    // If there's a current queue, and it's different from the base queue, then
-    // we need to transfer the updates to that queue, too. Because the base
-    // queue is a singly-linked list with no cycles, we can append to both
-    // lists and take advantage of structural sharing.
-    // TODO: Pass `current` as argument
-    const current = workInProgress.alternate;
+    // 如果存在当前队列（current）且与基础队列不同，则需要将更新也转移到那个队列
+    // 由于基础队列是无循环的单链表，我们可以同时追加到两个列表并利用结构共享
+    const current = workInProgress.alternate;  // 获取对应的工作进程 Fiber
+    // 如果有current queue，并且它和base queue不同，那么我们也需要把更新转移到那个queue上
     if (current !== null) {
-      // This is always non-null on a ClassComponent or HostRoot
+      // 类组件和HostRoot的updateQueue都初始化过，所以这里不会是null
+      // 这在类组件或宿主根节点上始终非空
       const currentQueue: UpdateQueue<State> = (current.updateQueue: any);
       const currentLastBaseUpdate = currentQueue.lastBaseUpdate;
+      // 如果当前队列的最后基础更新与工作进程队列的不同
       if (currentLastBaseUpdate !== lastBaseUpdate) {
         if (currentLastBaseUpdate === null) {
+          // 如果当前队列没有基础更新，设置第一个基础更新
           currentQueue.firstBaseUpdate = firstPendingUpdate;
         } else {
+          // 否则将待处理更新连接到当前队列末尾
           currentLastBaseUpdate.next = firstPendingUpdate;
         }
+        // 更新当前队列的最后基础更新
         currentQueue.lastBaseUpdate = lastPendingUpdate;
       }
     }
   }
 
-  // These values may change as we process the queue.
+  // 这些值在处理队列时可能会改变
   if (firstBaseUpdate !== null) {
-    // Iterate through the list of updates to compute the result.
-    let newState = queue.baseState;
-    // TODO: Don't need to accumulate this. Instead, we can remove renderLanes
-    // from the original lanes.
+    // 遍历更新列表以计算结果
+    let newState = queue.baseState;  // 从基准状态开始
+    // TODO: 不需要积累这个。相反，我们可以从原始车道中移除 renderLanes
     let newLanes = NoLanes;
 
+    // 新的基础状态和更新队列
     let newBaseState = null;
     let newFirstBaseUpdate = null;
     let newLastBaseUpdate = null;
 
+    // 从第一个基础更新开始遍历
     let update = firstBaseUpdate;
     do {
-      // TODO: Don't need this field anymore
+      // TODO: 不再需要这个字段
       const updateEventTime = update.eventTime;
 
-      // An extra OffscreenLane bit is added to updates that were made to
-      // a hidden tree, so that we can distinguish them from updates that were
-      // already there when the tree was hidden.
+      // 开始：这部分为Offscreen的处理，还未完成，这里不展开讲解
+
+      // 为隐藏树中的更新添加额外的 OffscreenLane 位，
+      // 以便我们可以将它们与树隐藏时已存在的更新区分开
       const updateLane = removeLanes(update.lane, OffscreenLane);
       const isHiddenUpdate = updateLane !== update.lane;
-
-      // Check if this update was made while the tree was hidden. If so, then
-      // it's not a "base" update and we should disregard the extra base lanes
-      // that were added to renderLanes when we entered the Offscreen tree.
+      // 检查此更新是否在树被隐藏时进行的
+      // 如果是，则这不是"基础"更新，我们应该忽略进入 Offscreen 树时添加到 renderLanes 的额外基础车道
       const shouldSkipUpdate = isHiddenUpdate
-        ? !isSubsetOfLanes(getWorkInProgressRootRenderLanes(), updateLane)
-        : !isSubsetOfLanes(renderLanes, updateLane);
+        ? !isSubsetOfLanes(getWorkInProgressRootRenderLanes(), updateLane)  // 检查工作进程根渲染车道
+        : !isSubsetOfLanes(renderLanes, updateLane);                       // 检查当前渲染车道
 
       if (shouldSkipUpdate) {
-        // Priority is insufficient. Skip this update. If this is the first
-        // skipped update, the previous update/state is the new base
-        // update/state.
+        // 优先级不足。跳过此更新。如果这是第一个跳过的更新，
+        // 则前面的更新/状态是新的基础更新/状态。
         const clone: Update<State> = {
           eventTime: updateEventTime,
           lane: updateLane,
@@ -557,22 +666,26 @@ export function processUpdateQueue<State>(
           next: null,
         };
         if (newLastBaseUpdate === null) {
+          // 如果新基础更新队列为空，初始化它
           newFirstBaseUpdate = newLastBaseUpdate = clone;
           newBaseState = newState;
         } else {
+          // 否则将克隆的更新添加到队列末尾
           newLastBaseUpdate = newLastBaseUpdate.next = clone;
         }
-        // Update the remaining priority in the queue.
+        // 更新队列中的剩余优先级
         newLanes = mergeLanes(newLanes, updateLane);
+
+        // 结束：这部分为Offscreen的处理，还未完成，这里不展开讲解
       } else {
-        // This update does have sufficient priority.
+        // 此更新具有足够的优先级。
 
         if (newLastBaseUpdate !== null) {
           const clone: Update<State> = {
             eventTime: updateEventTime,
-            // This update is going to be committed so we never want uncommit
-            // it. Using NoLane works because 0 is a subset of all bitmasks, so
-            // this will never be skipped by the check above.
+            // 此更新将被提交，所以我们永远不想取消提交它
+            // 使用 NoLane 是可行的，因为 0 是所有位掩码的子集，
+            // 所以永远不会被上面的检查跳过
             lane: NoLane,
 
             tag: update.tag,
@@ -584,7 +697,7 @@ export function processUpdateQueue<State>(
           newLastBaseUpdate = newLastBaseUpdate.next = clone;
         }
 
-        // Process this update.
+        // 处理此更新
         newState = getStateFromUpdate(
           workInProgress,
           queue,
@@ -593,33 +706,41 @@ export function processUpdateQueue<State>(
           props,
           instance,
         );
+
+        // 类组件的setState会在这里存储
+        // 获取更新的回调函数
         const callback = update.callback;
         if (
           callback !== null &&
-          // If the update was already committed, we should not queue its
-          // callback again.
+          // 如果更新已经被提交，我们不应再次排队其回调
           update.lane !== NoLane
         ) {
+          // 设置回调标志
           workInProgress.flags |= Callback;
+          // 获取副作用数组
           const effects = queue.effects;
           if (effects === null) {
+            // 如果副作用数组为空，创建新的数组
             queue.effects = [update];
           } else {
+            // 否则将更新推送到现有数组
             effects.push(update);
           }
         }
       }
+
+      // 移动到下一个更新
       update = update.next;
       if (update === null) {
+        // 如果到达队列末尾，检查是否有新添加的待处理更新
         pendingQueue = queue.shared.pending;
         if (pendingQueue === null) {
+          // 没有新添加的待处理更新，退出循环
           break;
         } else {
-          // An update was scheduled from inside a reducer. Add the new
-          // pending updates to the end of the list and keep processing.
+          // 在 reducer 内部调度了更新。将新的待处理更新添加到列表末尾并继续处理。
           const lastPendingUpdate = pendingQueue;
-          // Intentionally unsound. Pending updates form a circular list, but we
-          // unravel them when transferring them to the base queue.
+          // 故意不安全。待处理更新形成循环列表，但在将它们转移到基础队列时我们会解开它们。
           const firstPendingUpdate = ((lastPendingUpdate.next: any): Update<State>);
           lastPendingUpdate.next = null;
           update = firstPendingUpdate;
@@ -629,37 +750,36 @@ export function processUpdateQueue<State>(
       }
     } while (true);
 
+    // 如果没有新的基础更新，将新状态设为基础状态
     if (newLastBaseUpdate === null) {
       newBaseState = newState;
     }
 
-    queue.baseState = ((newBaseState: any): State);
-    queue.firstBaseUpdate = newFirstBaseUpdate;
-    queue.lastBaseUpdate = newLastBaseUpdate;
+    // 更新队列状态
+    queue.baseState = ((newBaseState: any): State);      // 设置新的基准状态
+    queue.firstBaseUpdate = newFirstBaseUpdate;          // 设置新的第一个基础更新
+    queue.lastBaseUpdate = newLastBaseUpdate;            // 设置新的最后一个基础更新
 
     if (firstBaseUpdate === null) {
-      // `queue.lanes` is used for entangling transitions. We can set it back to
-      // zero once the queue is empty.
+      // `queue.lanes` 用于纠缠过渡。一旦队列为空，我们可以将其设置回零。
       queue.shared.lanes = NoLanes;
     }
 
-    // Set the remaining expiration time to be whatever is remaining in the queue.
-    // This should be fine because the only two other things that contribute to
-    // expiration time are props and context. We're already in the middle of the
-    // begin phase by the time we start processing the queue, so we've already
-    // dealt with the props. Context in components that specify
-    // shouldComponentUpdate is tricky; but we'll have to account for
-    // that regardless.
-    markSkippedUpdateLanes(newLanes);
-    workInProgress.lanes = newLanes;
-    workInProgress.memoizedState = newState;
+    // 设置剩余到期时间为队列中剩余的任何时间
+    // 这应该是可行的，因为贡献到期时间的另外两件事是 props 和 context。
+    // 我们已经在开始阶段中途开始处理队列，所以我们已经处理了 props。
+    // 在指定 shouldComponentUpdate 的组件中的 context 是棘手的；
+    // 但我们无论如何都必须考虑这一点。
+    markSkippedUpdateLanes(newLanes);     // 标记跳过的更新车道
+    workInProgress.lanes = newLanes;      // 设置工作进程节点的车道
+    workInProgress.memoizedState = newState; // 设置工作进程节点的记忆状态
   }
 
   if (__DEV__) {
+    // 在开发环境中重置当前处理队列
     currentlyProcessingQueue = null;
   }
 }
-
 function callCallback(callback, context) {
   if (typeof callback !== 'function') {
     throw new Error(

@@ -317,7 +317,11 @@ export function createHydrationContainer(
 
   return root;
 }
-
+// 更新容器的函数，将元素渲染到指定的容器中
+// element: 要渲染的 React 元素列表
+// container: 不透明的根容器
+// parentComponent: 父组件（可选）
+// callback: 渲染完成后的回调函数（可选）
 export function updateContainer(
   element: ReactNodeList,
   container: OpaqueRoot,
@@ -325,30 +329,47 @@ export function updateContainer(
   callback: ?Function,
 ): Lane {
   if (__DEV__) {
+    // 在开发环境中，记录调度根节点的信息
     onScheduleRoot(container, element);
   }
+
+  // 获取当前的 Fiber 节点（根节点）
   const current = container.current;
+
+  // 请求获取事件时间
   const eventTime = requestEventTime();
+
+  // 请求获取更新的优先级车道
   const lane = requestUpdateLane(current);
 
   if (enableSchedulingProfiler) {
+    // 如果启用了调度分析器，标记已计划渲染
     markRenderScheduled(lane);
   }
 
+  // 获取子树的上下文
+  // parentComponent为null,此处代码只是返回一个空对象
+  // 此处用于兼容老代码,此处不再展开
   const context = getContextForSubtree(parentComponent);
+
+  // 如果容器上下文为空，则设置为新获取的上下文
   if (container.context === null) {
     container.context = context;
   } else {
+    // 否则设置为待处理上下文
     container.pendingContext = context;
   }
 
   if (__DEV__) {
+    // 检查是否在渲染过程中嵌套更新（不允许的操作）
     if (
-      ReactCurrentFiberIsRendering &&
-      ReactCurrentFiberCurrent !== null &&
-      !didWarnAboutNestedUpdates
+      ReactCurrentFiberIsRendering &&           // 当前是否正在渲染
+      ReactCurrentFiberCurrent !== null &&      // 当前 Fiber 不为空
+      !didWarnAboutNestedUpdates               // 尚未警告过嵌套更新
     ) {
+      // 设置警告标志，防止重复警告
       didWarnAboutNestedUpdates = true;
+      // 输出错误信息，提醒不要在渲染方法中触发嵌套更新
       console.error(
         'Render methods should be a pure function of props and state; ' +
           'triggering nested component updates from render is not allowed. ' +
@@ -359,34 +380,41 @@ export function updateContainer(
     }
   }
 
+  // 创建一个更新对象
   const update = createUpdate(eventTime, lane);
-  // Caution: React DevTools currently depends on this property
-  // being called "element".
-  update.payload = {element};
 
+  // 注意：React DevTools 目前依赖此属性被命名为 "element"
+  update.payload = {element};  // 将要渲染的元素设置为更新的负载
+
+  // 规范化回调函数（如果未定义则设为 null）
   callback = callback === undefined ? null : callback;
   if (callback !== null) {
     if (__DEV__) {
+      // 在开发环境中验证回调函数类型
       if (typeof callback !== 'function') {
         console.error(
-          'render(...): Expected the last optional `callback` argument to be a ' +
+          'render(...): Expected the last optional [callback](file:///Users/ll/Desktop/资料/编程/仓库/react/react-18.2.0/packages/react-reconciler/src/ReactFiberClassUpdateQueue.new.js#L258-L258) argument to be a ' +
             'function. Instead received: %s.',
           callback,
         );
       }
     }
+    // 设置更新的回调函数
     update.callback = callback;
   }
 
+  // 将更新加入队列并返回根节点
   const root = enqueueUpdate(current, update, lane);
   if (root !== null) {
+    // 如果根节点存在，安排执行 Fiber 上的更新
     scheduleUpdateOnFiber(root, current, lane, eventTime);
+    // 纠缠过渡（确保相关的更新一起处理）
     entangleTransitions(root, current, lane);
   }
 
+  // 返回更新的优先级车道
   return lane;
 }
-
 export {
   batchedUpdates,
   deferredUpdates,

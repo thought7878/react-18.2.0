@@ -384,27 +384,37 @@ const listeningMarker =
     .slice(2);
 
 export function listenToAllSupportedEvents(rootContainerElement: EventTarget) {
+  // 检查根容器元素是否已经被标记为正在监听，防止重复监听
   if (!(rootContainerElement: any)[listeningMarker]) {
     (rootContainerElement: any)[listeningMarker] = true;
+
+    // 遍历所有原生事件
     allNativeEvents.forEach(domEventName => {
-      // We handle selectionchange separately because it
-      // doesn't bubble and needs to be on the document.
+      // selectionchange 事件需要单独处理，因为它不会冒泡，
+      // 并且需要绑定到 document 上
       if (domEventName !== 'selectionchange') {
+        // 如果不是非委托事件，则对所有事件既添加捕获阶段监听又添加冒泡阶段监听
         if (!nonDelegatedEvents.has(domEventName)) {
+          // 添加捕获阶段监听（第三个参数 false 表示监听捕获阶段）
           listenToNativeEvent(domEventName, false, rootContainerElement);
         }
+        // 添加冒泡阶段监听（第四个参数 true 表示监听冒泡阶段）
         listenToNativeEvent(domEventName, true, rootContainerElement);
       }
     });
+
+    // 获取文档对象
     const ownerDocument =
       (rootContainerElement: any).nodeType === DOCUMENT_NODE
         ? rootContainerElement
         : (rootContainerElement: any).ownerDocument;
+
     if (ownerDocument !== null) {
-      // The selectionchange event also needs deduplication
-      // but it is attached to the document.
+      // selectionchange 事件也需要去重处理
+      // 但它需要绑定到 document 上
       if (!(ownerDocument: any)[listeningMarker]) {
         (ownerDocument: any)[listeningMarker] = true;
+        // 在 document 上监听 selectionchange 事件
         listenToNativeEvent('selectionchange', false, ownerDocument);
       }
     }

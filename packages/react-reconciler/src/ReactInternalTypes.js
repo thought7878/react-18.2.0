@@ -76,6 +76,7 @@ export type Fiber = {|
   // minimize the number of objects created during the initial render.
 
   // Tag identifying the type of fiber.
+  // 标记fiber的类型，即组件类型（如原生标签、函数组件、类组件、Fragment等）。这里参考ReactWorkTags.js
   tag: WorkTag,
 
   // Unique identifier of this child.
