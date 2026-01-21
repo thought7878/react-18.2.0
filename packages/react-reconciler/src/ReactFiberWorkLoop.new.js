@@ -903,7 +903,7 @@ function performConcurrentWorkOnRoot(root, didTimeout) {
     !includesExpiredLane(root, lanes) &&
     (disableSchedulerTimeoutInWorkLoop || !didTimeout);
 
-  // 根据是否需要时间切片选择不同的渲染方式
+  // ！！！根据是否需要时间切片选择不同的渲染方式
   let exitStatus = shouldTimeSlice
     ? renderRootConcurrent(root, lanes)  // 并发渲染
     : renderRootSync(root, lanes);       // 同步渲染
@@ -1468,22 +1468,28 @@ export function popRenderLanes(fiber: Fiber) {
 }
 
 function prepareFreshStack(root: FiberRoot, lanes: Lanes): Fiber {
+  // 清除之前完成的工作信息
   root.finishedWork = null;
   root.finishedLanes = NoLanes;
 
+  // 检查是否有之前的超时句柄（通常是由于 Suspense fallback 而设置的）
   const timeoutHandle = root.timeoutHandle;
   if (timeoutHandle !== noTimeout) {
-    // The root previous suspended and scheduled a timeout to commit a fallback
-    // state. Now that we have additional work, cancel the timeout.
+    // 根节点之前被挂起并安排了一个超时来提交 fallback 状态
+    // 现在我们有了额外的工作，需要取消超时
     root.timeoutHandle = noTimeout;
+    // 取消之前的超时
     // $FlowFixMe Complains noTimeout is not a TimeoutID, despite the check above
     cancelTimeout(timeoutHandle);
   }
 
+  // 如果当前有正在进行的工作，需要清理中断的工作状态
   if (workInProgress !== null) {
     let interruptedWork = workInProgress.return;
+    // 从当前工作中断的位置向上遍历，对每个节点执行清理操作
     while (interruptedWork !== null) {
       const current = interruptedWork.alternate;
+      // 撤销中断的工作，恢复到一致的状态
       unwindInterruptedWork(
         current,
         interruptedWork,
@@ -1492,25 +1498,36 @@ function prepareFreshStack(root: FiberRoot, lanes: Lanes): Fiber {
       interruptedWork = interruptedWork.return;
     }
   }
+
+  // 设置当前工作的根节点
   workInProgressRoot = root;
+
+  // 创建一个新的rootFiber（工作进程 Fiber），基于当前的根节点（createRoot创建的rootFiber）
   const rootWorkInProgress = createWorkInProgress(root.current, null);
   workInProgress = rootWorkInProgress;
-  workInProgressRootRenderLanes = subtreeRenderLanes = workInProgressRootIncludedLanes = lanes;
-  workInProgressRootExitStatus = RootInProgress;
-  workInProgressRootFatalError = null;
-  workInProgressRootSkippedLanes = NoLanes;
-  workInProgressRootInterleavedUpdatedLanes = NoLanes;
-  workInProgressRootRenderPhaseUpdatedLanes = NoLanes;
-  workInProgressRootPingedLanes = NoLanes;
-  workInProgressRootConcurrentErrors = null;
-  workInProgressRootRecoverableErrors = null;
 
+  // 设置当前渲染的各种通道信息
+  workInProgressRootRenderLanes = subtreeRenderLanes = workInProgressRootIncludedLanes = lanes;
+
+  // 初始化各种工作状态
+  workInProgressRootExitStatus = RootInProgress;      // 设置渲染状态为进行中
+  workInProgressRootFatalError = null;                // 清除致命错误
+  workInProgressRootSkippedLanes = NoLanes;           // 无跳过的通道
+  workInProgressRootInterleavedUpdatedLanes = NoLanes; // 无交错更新的通道
+  workInProgressRootRenderPhaseUpdatedLanes = NoLanes; // 无渲染阶段更新的通道
+  workInProgressRootPingedLanes = NoLanes;            // 无被 ping 的通道
+  workInProgressRootConcurrentErrors = null;          // 无并发错误
+  workInProgressRootRecoverableErrors = null;         // 无可恢复的错误
+
+  // 完成并发更新的队列处理
   finishQueueingConcurrentUpdates();
 
+  // 在开发模式下，丢弃待处理的警告
   if (__DEV__) {
     ReactStrictModeWarnings.discardPendingWarnings();
   }
 
+  // 返回新创建的工作进程 Fiber
   return rootWorkInProgress;
 }
 
@@ -1678,88 +1695,106 @@ export function renderHasNotSuspendedYet(): boolean {
   // so those are false.
   return workInProgressRootExitStatus === RootInProgress;
 }
-
 function renderRootSync(root: FiberRoot, lanes: Lanes) {
+  // 保存当前执行上下文，以便在函数结束时恢复
   const prevExecutionContext = executionContext;
+  // 将执行上下文设置为渲染上下文
   executionContext |= RenderContext;
+  // 保存当前的调度器，并推送新的调度器
   const prevDispatcher = pushDispatcher();
 
-  // If the root or lanes have changed, throw out the existing stack
-  // and prepare a fresh one. Otherwise we'll continue where we left off.
+  // 如果根节点或渲染lanes发生了变化，则丢弃现有堆栈并准备一个全新的
+  // ！！！否则我们将从上次离开的地方继续
   if (workInProgressRoot !== root || workInProgressRootRenderLanes !== lanes) {
     if (enableUpdaterTracking) {
       if (isDevToolsPresent) {
         const memoizedUpdaters = root.memoizedUpdaters;
+        // 如果有待处理的更新器，则恢复它们并清空集合
         if (memoizedUpdaters.size > 0) {
           restorePendingUpdaters(root, workInProgressRootRenderLanes);
           memoizedUpdaters.clear();
         }
 
-        // At this point, move Fibers that scheduled the upcoming work from the Map to the Set.
-        // If we bailout on this work, we'll move them back (like above).
-        // It's important to move them now in case the work spawns more work at the same priority with different updaters.
-        // That way we can keep the current update and future updates separate.
+        // 此时，将调度即将到来工作的 Fiber 从 Map 移动到 Set
+        // 如果我们放弃这项工作，我们会将它们移回（像上面一样）
+        // 现在移动它们很重要，以防工作以相同优先级生成更多工作，但具有不同的更新器
+        // 这样我们可以将当前更新和未来更新分开
         movePendingFibersToMemoized(root, lanes);
       }
     }
 
+    // 获取当前通道的过渡信息
     workInProgressTransitions = getTransitionsForLanes(root, lanes);
+    // ！！！准备一个新的堆栈（初始化渲染所需的数据结构）
     prepareFreshStack(root, lanes);
   }
 
+  // 如果是开发环境且启用调试追踪，记录渲染开始
   if (__DEV__) {
     if (enableDebugTracing) {
       logRenderStarted(lanes);
     }
   }
 
+  // 如果启用了调度分析器，标记渲染开始
   if (enableSchedulingProfiler) {
     markRenderStarted(lanes);
   }
 
+  // 循环执行渲染工作，直到完成或遇到错误
   do {
     try {
+      // ！！！同步工作循环 - 执行实际的渲染工作
       workLoopSync();
       break;
     } catch (thrownValue) {
+      // 如果出现错误，处理错误
       handleError(root, thrownValue);
     }
   } while (true);
+
+  // 重置上下文依赖关系
   resetContextDependencies();
 
+  // 恢复执行上下文到之前的值
   executionContext = prevExecutionContext;
+  // 弹出当前调度器并恢复之前的调度器
   popDispatcher(prevDispatcher);
 
+  // 在同步渲染中，我们应该完成整个树的渲染
+  // 如果 workInProgress 不为空，说明渲染没有完成，这是一个错误状态
   if (workInProgress !== null) {
-    // This is a sync render, so we should have finished the whole tree.
     throw new Error(
       'Cannot commit an incomplete root. This error is likely caused by a ' +
         'bug in React. Please file an issue.',
     );
   }
 
+  // 如果是开发环境且启用调试追踪，记录渲染停止
   if (__DEV__) {
     if (enableDebugTracing) {
       logRenderStopped();
     }
   }
 
+  // 如果启用了调度分析器，标记渲染停止
   if (enableSchedulingProfiler) {
     markRenderStopped();
   }
 
-  // Set this to null to indicate there's no in-progress render.
+  // 设置为 null 表示没有正在进行的渲染
   workInProgressRoot = null;
   workInProgressRootRenderLanes = NoLanes;
 
+  // 返回渲染的退出状态
   return workInProgressRootExitStatus;
 }
-
 // The work loop is an extremely hot path. Tell Closure not to inline it.
 /** @noinline */
 function workLoopSync() {
-  // Already timed out, so perform work without checking if we need to yield.
+  // 已经超时，因此执行工作而不检查是否需要让出控制权
   while (workInProgress !== null) {
+    // 执行一个工作单元，这将处理当前的Fiber节点并将其连接到下一个要处理的节点
     performUnitOfWork(workInProgress);
   }
 }
@@ -1853,30 +1888,44 @@ function workLoopConcurrent() {
 }
 
 function performUnitOfWork(unitOfWork: Fiber): void {
-  // The current, flushed, state of this fiber is the alternate. Ideally
-  // nothing should rely on this, but relying on it here means that we don't
-  // need an additional field on the work in progress.
+  // 当前工作单元的刷新状态是 alternate。理想情况下，
+  // 不应该依赖于此，但在这里依赖它可以避免在进行中的工作上
+  // 添加额外的字段
   const current = unitOfWork.alternate;
+
+  // 设置当前调试用的 Fiber，用于开发时调试和错误定位
   setCurrentDebugFiberInDEV(unitOfWork);
 
   let next;
+  // 如果启用了性能分析并且当前 Fiber 模式包含 ProfileMode
   if (enableProfilerTimer && (unitOfWork.mode & ProfileMode) !== NoMode) {
+    // 开始性能计时
     startProfilerTimer(unitOfWork);
+    // 执行工作单元的开始阶段，处理节点的渲染逻辑
     next = beginWork(current, unitOfWork, subtreeRenderLanes);
+    // 停止计时并记录时间差
     stopProfilerTimerIfRunningAndRecordDelta(unitOfWork, true);
   } else {
+    // 不需要性能分析时直接执行 beginWork
     next = beginWork(current, unitOfWork, subtreeRenderLanes);
   }
 
+  // 重置当前调试用的 Fiber
   resetCurrentDebugFiberInDEV();
+
+  // 将当前待处理的 props 存储为 memoizedProps
   unitOfWork.memoizedProps = unitOfWork.pendingProps;
+
   if (next === null) {
-    // If this doesn't spawn new work, complete the current work.
+    // 如果没有产生下一个工作单元，表示当前节点的工作已经完成
+    // 则进入完成阶段，处理当前节点的完成工作
     completeUnitOfWork(unitOfWork);
   } else {
+    // 如果有下一个工作单元，将它设置为下一个要处理的节点
     workInProgress = next;
   }
 
+  // 清空当前 owner，避免跨组件渲染时的混淆
   ReactCurrentOwner.current = null;
 }
 

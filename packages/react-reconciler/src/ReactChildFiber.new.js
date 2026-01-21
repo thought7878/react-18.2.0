@@ -185,7 +185,7 @@ function coerceRef(
       ) {
         return current.ref;
       }
-      const ref = function(value) {
+      const ref = function (value) {
         let refs = resolvedInst.refs;
         if (refs === emptyRefsObject) {
           // This is a lazy pooled frozen object, so we need to initialize.
@@ -890,7 +890,7 @@ function ChildReconciler(shouldTrackSideEffects) {
     if (shouldTrackSideEffects) {
       // Any existing children that weren't consumed above were deleted. We need
       // to add them to the deletion list.
-      existingChildren.forEach(child => deleteChild(returnFiber, child));
+      existingChildren.forEach((child) => deleteChild(returnFiber, child));
     }
 
     if (getIsHydrating()) {
@@ -1092,7 +1092,7 @@ function ChildReconciler(shouldTrackSideEffects) {
     if (shouldTrackSideEffects) {
       // Any existing children that weren't consumed above were deleted. We need
       // to add them to the deletion list.
-      existingChildren.forEach(child => deleteChild(returnFiber, child));
+      existingChildren.forEach((child) => deleteChild(returnFiber, child));
     }
 
     if (getIsHydrating()) {
@@ -1127,23 +1127,33 @@ function ChildReconciler(shouldTrackSideEffects) {
   }
 
   function reconcileSingleElement(
-    returnFiber: Fiber,
-    currentFirstChild: Fiber | null,
-    element: ReactElement,
-    lanes: Lanes,
+    returnFiber: Fiber, // 父级 Fiber 节点
+    currentFirstChild: Fiber | null, // 当前第一个子 Fiber 节点
+    element: ReactElement, // 新的 React 元素
+    lanes: Lanes, // 优先级相关的 lanes
   ): Fiber {
+    // 获取新元素的 key
     const key = element.key;
+    // 从当前的第一个子节点开始遍历
     let child = currentFirstChild;
+    // 遍历现有的子节点链表
     while (child !== null) {
       // TODO: If key === null and child.key === null, then this only applies to
       // the first item in the list.
+      // 比较 key 是否匹配，这是 React diff 算法的关键一步
       if (child.key === key) {
+        // 获取新元素的类型
         const elementType = element.type;
+        // 如果是 Fragment 类型
         if (elementType === REACT_FRAGMENT_TYPE) {
+          // 检查现有节点是否也是 Fragment 类型
           if (child.tag === Fragment) {
+            // 删除该节点之后的所有兄弟节点
             deleteRemainingChildren(returnFiber, child.sibling);
+            // 复用现有节点，只更新 props
             const existing = useFiber(child, element.props.children);
             existing.return = returnFiber;
+            // 开发环境下添加调试信息
             if (__DEV__) {
               existing._debugSource = element._source;
               existing._debugOwner = element._owner;
@@ -1151,25 +1161,28 @@ function ChildReconciler(shouldTrackSideEffects) {
             return existing;
           }
         } else {
+          // 非 Fragment 类型的元素
           if (
+            // 检查元素类型是否相同
             child.elementType === elementType ||
-            // Keep this check inline so it only runs on the false path:
+            // 在开发环境下，为了热重载功能做额外检查
             (__DEV__
               ? isCompatibleFamilyForHotReloading(child, element)
               : false) ||
-            // Lazy types should reconcile their resolved type.
-            // We need to do this after the Hot Reloading check above,
-            // because hot reloading has different semantics than prod because
-            // it doesn't resuspend. So we can't let the call below suspend.
+            // 对于懒加载组件，需要解析实际类型进行比较
             (typeof elementType === 'object' &&
               elementType !== null &&
               elementType.$$typeof === REACT_LAZY_TYPE &&
               resolveLazy(elementType) === child.type)
           ) {
+            // 匹配成功，删除该节点之后的所有兄弟节点
             deleteRemainingChildren(returnFiber, child.sibling);
+            // 复用现有节点，更新 props
             const existing = useFiber(child, element.props);
+            // 处理 ref 更新
             existing.ref = coerceRef(returnFiber, child, element);
             existing.return = returnFiber;
+            // 开发环境下添加调试信息
             if (__DEV__) {
               existing._debugSource = element._source;
               existing._debugOwner = element._owner;
@@ -1177,26 +1190,33 @@ function ChildReconciler(shouldTrackSideEffects) {
             return existing;
           }
         }
+        // 没有匹配成功，删除这个节点及其所有兄弟节点
         // Didn't match.
         deleteRemainingChildren(returnFiber, child);
         break;
       } else {
+        // key 不匹配，删除当前节点
         deleteChild(returnFiber, child);
       }
+      // 移动到下一个兄弟节点
       child = child.sibling;
     }
 
+    // 如果遍历完现有节点都没有找到匹配项，创建一个新的 Fiber 节点
     if (element.type === REACT_FRAGMENT_TYPE) {
+      // 如果是 Fragment 类型，创建 Fragment Fiber
       const created = createFiberFromFragment(
-        element.props.children,
-        returnFiber.mode,
-        lanes,
-        element.key,
+        element.props.children, // 子元素
+        returnFiber.mode, // 渲染模式
+        lanes, // 优先级
+        element.key, // key
       );
       created.return = returnFiber;
       return created;
     } else {
+      // 普通元素类型，创建 Element Fiber
       const created = createFiberFromElement(element, returnFiber.mode, lanes);
+      // 处理 ref
       created.ref = coerceRef(returnFiber, currentFirstChild, element);
       created.return = returnFiber;
       return created;
@@ -1243,10 +1263,10 @@ function ChildReconciler(shouldTrackSideEffects) {
   // itself. They will be added to the side-effect list as we pass through the
   // children and the parent.
   function reconcileChildFibers(
-    returnFiber: Fiber,
-    currentFirstChild: Fiber | null,
-    newChild: any,
-    lanes: Lanes,
+    returnFiber: Fiber, // 父级 Fiber 节点
+    currentFirstChild: Fiber | null, // 当前的第一个子 Fiber 节点
+    newChild: any, // 新的子节点（可能是 React 元素、字符串、数组等）
+    lanes: Lanes, // 优先级相关的 lanes
   ): Fiber | null {
     // This function is not recursive.
     // If the top level item is an array, we treat it as a set of children,
@@ -1262,13 +1282,15 @@ function ChildReconciler(shouldTrackSideEffects) {
       newChild.type === REACT_FRAGMENT_TYPE &&
       newChild.key === null;
     if (isUnkeyedTopLevelFragment) {
+      // 如果是顶层未指定 key 的 Fragment，将其子元素作为普通数组处理
       newChild = newChild.props.children;
     }
 
-    // Handle object types
+    // Handle object types - 处理对象类型
     if (typeof newChild === 'object' && newChild !== null) {
       switch (newChild.$$typeof) {
         case REACT_ELEMENT_TYPE:
+          // 处理单个 React 元素，如首次渲染的<App/>
           return placeSingleChild(
             reconcileSingleElement(
               returnFiber,
@@ -1278,6 +1300,7 @@ function ChildReconciler(shouldTrackSideEffects) {
             ),
           );
         case REACT_PORTAL_TYPE:
+          // 处理 Portal 元素
           return placeSingleChild(
             reconcileSinglePortal(
               returnFiber,
@@ -1287,6 +1310,7 @@ function ChildReconciler(shouldTrackSideEffects) {
             ),
           );
         case REACT_LAZY_TYPE:
+          // 处理懒加载组件（lazy/Suspense）
           const payload = newChild._payload;
           const init = newChild._init;
           // TODO: This function is supposed to be non-recursive.
@@ -1298,7 +1322,9 @@ function ChildReconciler(shouldTrackSideEffects) {
           );
       }
 
+      // 检查是否为数组
       if (isArray(newChild)) {
+        // 处理数组类型的子节点
         return reconcileChildrenArray(
           returnFiber,
           currentFirstChild,
@@ -1307,7 +1333,9 @@ function ChildReconciler(shouldTrackSideEffects) {
         );
       }
 
+      // 检查是否为可迭代对象（如 Map、Set 等）
       if (getIteratorFn(newChild)) {
+        // 处理迭代器类型的子节点
         return reconcileChildrenIterator(
           returnFiber,
           currentFirstChild,
@@ -1316,9 +1344,11 @@ function ChildReconciler(shouldTrackSideEffects) {
         );
       }
 
+      // 如果是对象类型但不是以上任何一种，抛出错误
       throwOnInvalidObjectType(returnFiber, newChild);
     }
 
+    // 处理字符串和数字类型（将它们转换为文本节点）
     if (
       (typeof newChild === 'string' && newChild !== '') ||
       typeof newChild === 'number'
@@ -1333,20 +1363,23 @@ function ChildReconciler(shouldTrackSideEffects) {
       );
     }
 
+    // 开发环境下处理函数类型的错误情况
     if (__DEV__) {
       if (typeof newChild === 'function') {
         warnOnFunctionType(returnFiber);
       }
     }
 
-    // Remaining cases are all treated as empty.
+    // 剩余的所有情况都被当作空处理，删除所有现有的子节点
     return deleteRemainingChildren(returnFiber, currentFirstChild);
   }
 
   return reconcileChildFibers;
 }
 
+// 更新渲染，调用
 export const reconcileChildFibers = ChildReconciler(true);
+// 首次渲染，调用
 export const mountChildFibers = ChildReconciler(false);
 
 export function cloneChildFibers(
